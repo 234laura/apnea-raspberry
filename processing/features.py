@@ -21,8 +21,8 @@ class PPGEstimator:
         self,
         fs=25,
         window_seconds=8,
-        finger_on_threshold=12000,
-        finger_off_threshold=4000,
+        finger_on_threshold=8000,
+        finger_off_threshold=2500,
     ):
         self.fs = fs
         self.maxlen = fs * window_seconds
@@ -34,6 +34,7 @@ class PPGEstimator:
         self.ir = deque(maxlen=self.maxlen)
 
         self.finger_present = False
+        self.samples_since_finger_on = 0
 
         self.fc_hist = deque(maxlen=5)
         self.spo2_hist = deque(maxlen=5)
@@ -43,23 +44,30 @@ class PPGEstimator:
         self.ir.clear()
         self.fc_hist.clear()
         self.spo2_hist.clear()
+        self.samples_since_finger_on = 0
 
     def add_sample(self, red, ir):
         red = float(red)
         ir = float(ir)
 
-        self.red.append(red)
-        self.ir.append(ir)
-
-        recientes = list(self.ir)[-min(len(self.ir), self.fs):]
-        ir_med = median(recientes) if recientes else 0
+        # ventana corta para detectar dedo más rápido
+        temp_ir = list(self.ir)[-4:] + [ir]
+        ir_med = median(temp_ir) if temp_ir else 0
 
         if not self.finger_present and ir_med > self.finger_on_threshold:
             self.finger_present = True
+            self.reset_buffers()
 
         elif self.finger_present and ir_med < self.finger_off_threshold:
             self.finger_present = False
             self.reset_buffers()
+            return
+
+        self.red.append(red)
+        self.ir.append(ir)
+
+        if self.finger_present:
+            self.samples_since_finger_on += 1
 
     def _moving_average(self, data, k=5):
         if len(data) < k:
@@ -81,13 +89,15 @@ class PPGEstimator:
         return self.finger_present
 
     def _senal_suficiente(self):
-        return len(self.ir) >= int(self.fs * 5)
+        # en vez de esperar tanto, empezamos a calcular antes
+        return len(self.ir) >= int(self.fs * 3)
+
+    def _dedo_estable(self):
+        # exige 2 segundos de dedo presente
+        return self.samples_since_finger_on >= int(self.fs * 2)
 
     def estimate_hr_raw(self):
-        if not self.hay_dedo():
-            return None
-
-        if not self._senal_suficiente():
+        if not self.hay_dedo() or not self._senal_suficiente():
             return None
 
         ir = list(self.ir)
@@ -137,10 +147,7 @@ class PPGEstimator:
         return None
 
     def estimate_spo2_raw(self):
-        if not self.hay_dedo():
-            return None
-
-        if not self._senal_suficiente():
+        if not self.hay_dedo() or not self._senal_suficiente():
             return None
 
         red = list(self.red)
@@ -159,6 +166,8 @@ class PPGEstimator:
             return None
 
         r = (ac_red / dc_red) / (ac_ir / dc_ir)
+
+        # fórmula provisional, no clínica
         spo2 = 104 - 17 * r
 
         if spo2 < 70:
@@ -168,9 +177,21 @@ class PPGEstimator:
 
         return round(spo2, 1)
 
+    def _senal_estable(self):
+        if len(self.fc_hist) < 3 or len(self.spo2_hist) < 3:
+            return False
+
+        fc_spread = max(self.fc_hist) - min(self.fc_hist)
+        spo2_spread = max(self.spo2_hist) - min(self.spo2_hist)
+
+        return fc_spread <= 15 and spo2_spread <= 4
+
     def estimate_vitals(self):
         if not self.hay_dedo():
             return {"fc": None, "spo2": None, "status": "SIN_DEDO"}
+
+        if not self._dedo_estable():
+            return {"fc": None, "spo2": None, "status": "CALCULANDO"}
 
         if not self._senal_suficiente():
             return {"fc": None, "spo2": None, "status": "CALCULANDO"}
@@ -183,6 +204,9 @@ class PPGEstimator:
 
         self.fc_hist.append(fc_raw)
         self.spo2_hist.append(spo2_raw)
+
+        if not self._senal_estable():
+            return {"fc": None, "spo2": None, "status": "CALCULANDO"}
 
         fc = round(median(self.fc_hist), 1)
         spo2 = round(median(self.spo2_hist), 1)
