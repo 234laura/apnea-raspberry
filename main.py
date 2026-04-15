@@ -18,7 +18,11 @@ def main():
     fs = 25
     dt = 1 / fs
 
-    ppg = PPGEstimator(fs=fs, window_seconds=8, finger_threshold_ir=5000)
+    ppg = PPGEstimator(
+    fs=fs,
+    window_seconds=8,
+    finger_on_threshold=12000,
+    finger_off_threshold=4000)
 
     historial_mov = []
     ultimo_reporte = time.time()
