@@ -17,17 +17,49 @@ def calcular_pausa_desde_historial(historial_mov, umbral=0.03, dt=1.0):
 
 
 class PPGEstimator:
-    def __init__(self, fs=25, window_seconds=8, finger_threshold_ir=5000):
+    def __init__(
+        self,
+        fs=25,
+        window_seconds=8,
+        finger_on_threshold=12000,
+        finger_off_threshold=4000,
+    ):
         self.fs = fs
         self.maxlen = fs * window_seconds
-        self.finger_threshold_ir = finger_threshold_ir
+
+        self.finger_on_threshold = finger_on_threshold
+        self.finger_off_threshold = finger_off_threshold
 
         self.red = deque(maxlen=self.maxlen)
         self.ir = deque(maxlen=self.maxlen)
 
+        self.finger_present = False
+
+        self.fc_hist = deque(maxlen=5)
+        self.spo2_hist = deque(maxlen=5)
+
+    def reset_buffers(self):
+        self.red.clear()
+        self.ir.clear()
+        self.fc_hist.clear()
+        self.spo2_hist.clear()
+
     def add_sample(self, red, ir):
-        self.red.append(float(red))
-        self.ir.append(float(ir))
+        red = float(red)
+        ir = float(ir)
+
+        self.red.append(red)
+        self.ir.append(ir)
+
+        recientes = list(self.ir)[-min(len(self.ir), self.fs):]
+        ir_med = median(recientes) if recientes else 0
+
+        if not self.finger_present and ir_med > self.finger_on_threshold:
+            self.finger_present = True
+
+        elif self.finger_present and ir_med < self.finger_off_threshold:
+            self.finger_present = False
+            self.reset_buffers()
 
     def _moving_average(self, data, k=5):
         if len(data) < k:
@@ -46,16 +78,12 @@ class PPGEstimator:
         return [x - b for x, b in zip(data, baseline)]
 
     def hay_dedo(self):
-        if len(self.ir) < max(3, self.fs // 2):
-            return False
-
-        recientes = list(self.ir)[-min(len(self.ir), self.fs):]
-        return median(recientes) > self.finger_threshold_ir
+        return self.finger_present
 
     def _senal_suficiente(self):
-        return len(self.ir) >= int(self.fs * 4)
+        return len(self.ir) >= int(self.fs * 5)
 
-    def estimate_hr(self):
+    def estimate_hr_raw(self):
         if not self.hay_dedo():
             return None
 
@@ -70,11 +98,14 @@ class PPGEstimator:
             return None
 
         max_val = max(smooth)
-        if max_val <= 0:
+        min_val = min(smooth)
+        amp = max_val - min_val
+
+        if amp <= 0:
             return None
 
-        peak_threshold = 0.5 * max_val
-        min_distance = int(0.4 * self.fs)
+        peak_threshold = min_val + 0.6 * amp
+        min_distance = int(0.45 * self.fs)
 
         peaks = []
         last_peak = -10**9
@@ -100,12 +131,12 @@ class PPGEstimator:
 
         bpm = 60.0 / ibi
 
-        if 35 <= bpm <= 220:
+        if 45 <= bpm <= 180:
             return round(bpm, 1)
 
         return None
 
-    def estimate_spo2(self):
+    def estimate_spo2_raw(self):
         if not self.hay_dedo():
             return None
 
@@ -128,7 +159,7 @@ class PPGEstimator:
             return None
 
         r = (ac_red / dc_red) / (ac_ir / dc_ir)
-        spo2 = 110 - 25 * r
+        spo2 = 104 - 17 * r
 
         if spo2 < 70:
             spo2 = 70
@@ -139,28 +170,22 @@ class PPGEstimator:
 
     def estimate_vitals(self):
         if not self.hay_dedo():
-            return {
-                "fc": None,
-                "spo2": None,
-                "status": "SIN_DEDO"
-            }
+            return {"fc": None, "spo2": None, "status": "SIN_DEDO"}
 
         if not self._senal_suficiente():
-            return {
-                "fc": None,
-                "spo2": None,
-                "status": "CALCULANDO"
-            }
+            return {"fc": None, "spo2": None, "status": "CALCULANDO"}
 
-        fc = self.estimate_hr()
-        spo2 = self.estimate_spo2()
+        fc_raw = self.estimate_hr_raw()
+        spo2_raw = self.estimate_spo2_raw()
 
-        if fc is None or spo2 is None:
-            return {
-                "fc": None,
-                "spo2": None,
-                "status": "CALCULANDO"
-            }
+        if fc_raw is None or spo2_raw is None:
+            return {"fc": None, "spo2": None, "status": "CALCULANDO"}
+
+        self.fc_hist.append(fc_raw)
+        self.spo2_hist.append(spo2_raw)
+
+        fc = round(median(self.fc_hist), 1)
+        spo2 = round(median(self.spo2_hist), 1)
 
         return {
             "fc": fc,

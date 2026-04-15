@@ -90,7 +90,7 @@ def main():
                         f"ay={datos_acc['ay']:.3f} | "
                         f"az={datos_acc['az']:.3f} | "
                         f"Mov={movimiento:.3f} | "
-                        f"Pausa={pausa_seg} s | "
+                        f"Pausa=None | "
                         f"Estado=NO_EVALUADO"
                     )
 
