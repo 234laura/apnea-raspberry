@@ -17,18 +17,17 @@ def calcular_pausa_desde_historial(historial_mov, umbral=0.03, dt=1.0):
 
 
 class PPGEstimator:
-    def __init__(self, fs=25, window_seconds=8):
+    def __init__(self, fs=25, window_seconds=8, finger_threshold_ir=5000):
         self.fs = fs
         self.maxlen = fs * window_seconds
+        self.finger_threshold_ir = finger_threshold_ir
+
         self.red = deque(maxlen=self.maxlen)
         self.ir = deque(maxlen=self.maxlen)
 
     def add_sample(self, red, ir):
         self.red.append(float(red))
         self.ir.append(float(ir))
-
-    def ready(self):
-        return len(self.ir) >= int(self.fs * 4)
 
     def _moving_average(self, data, k=5):
         if len(data) < k:
@@ -46,16 +45,36 @@ class PPGEstimator:
         baseline = self._moving_average(data, k=k)
         return [x - b for x, b in zip(data, baseline)]
 
+    def hay_dedo(self):
+        if len(self.ir) < max(3, self.fs // 2):
+            return False
+
+        recientes = list(self.ir)[-min(len(self.ir), self.fs):]
+        return median(recientes) > self.finger_threshold_ir
+
+    def _senal_suficiente(self):
+        return len(self.ir) >= int(self.fs * 4)
+
     def estimate_hr(self):
-        if not self.ready():
+        if not self.hay_dedo():
+            return None
+
+        if not self._senal_suficiente():
             return None
 
         ir = list(self.ir)
         signal = self._detrend(ir, k=max(5, self.fs))
         smooth = self._moving_average(signal, k=5)
 
-        peak_threshold = 0.5 * max(smooth) if smooth else 0
-        min_distance = int(0.4 * self.fs)  # evita dobles picos >150 bpm
+        if not smooth:
+            return None
+
+        max_val = max(smooth)
+        if max_val <= 0:
+            return None
+
+        peak_threshold = 0.5 * max_val
+        min_distance = int(0.4 * self.fs)
 
         peaks = []
         last_peak = -10**9
@@ -83,10 +102,14 @@ class PPGEstimator:
 
         if 35 <= bpm <= 220:
             return round(bpm, 1)
+
         return None
 
     def estimate_spo2(self):
-        if not self.ready():
+        if not self.hay_dedo():
+            return None
+
+        if not self._senal_suficiente():
             return None
 
         red = list(self.red)
@@ -101,12 +124,10 @@ class PPGEstimator:
         ac_red = max(red) - min(red)
         ac_ir = max(ir) - min(ir)
 
-        if ac_ir <= 0:
+        if ac_red <= 0 or ac_ir <= 0:
             return None
 
-        # Aproximación de ingeniería para prototipo
         r = (ac_red / dc_red) / (ac_ir / dc_ir)
-
         spo2 = 110 - 25 * r
 
         if spo2 < 70:
@@ -117,19 +138,41 @@ class PPGEstimator:
         return round(spo2, 1)
 
     def estimate_vitals(self):
+        if not self.hay_dedo():
+            return {
+                "fc": None,
+                "spo2": None,
+                "status": "SIN_DEDO"
+            }
+
+        if not self._senal_suficiente():
+            return {
+                "fc": None,
+                "spo2": None,
+                "status": "CALCULANDO"
+            }
+
+        fc = self.estimate_hr()
+        spo2 = self.estimate_spo2()
+
+        if fc is None or spo2 is None:
+            return {
+                "fc": None,
+                "spo2": None,
+                "status": "CALCULANDO"
+            }
+
         return {
-            "fc": self.estimate_hr(),
-            "spo2": self.estimate_spo2(),
+            "fc": fc,
+            "spo2": spo2,
+            "status": "VALIDO"
         }
 
 
 def preparar_variables_para_prolog(vitales, movimiento, pausa_seg):
-    fc = vitales["fc"] if vitales["fc"] is not None else 0
-    spo2 = vitales["spo2"] if vitales["spo2"] is not None else 0
-
     return {
-        "fc": fc,
-        "spo2": spo2,
+        "fc": vitales["fc"],
+        "spo2": vitales["spo2"],
         "movimiento": movimiento,
         "pausa_seg": pausa_seg
     }

@@ -15,11 +15,10 @@ def main():
     accel = MPU6050(bus_id=3)
     max_sensor = MAX30102(bus_id=1)
 
-    # Muestreo del MAX mucho más rápido
     fs = 25
     dt = 1 / fs
 
-    ppg = PPGEstimator(fs=fs, window_seconds=8)
+    ppg = PPGEstimator(fs=fs, window_seconds=8, finger_threshold_ir=5000)
 
     historial_mov = []
     ultimo_reporte = time.time()
@@ -27,6 +26,8 @@ def main():
     try:
         accel.setup()
         max_sensor.setup()
+
+        print("\n--- MAX30102 real + acelerómetro real + validación de dedo + Prolog ---\n")
 
         while True:
             datos_acc = accel.read_accel_g()
@@ -40,7 +41,6 @@ def main():
             if len(historial_mov) > 60:
                 historial_mov.pop(0)
 
-            # pausa estimada en escala de 1 segundo
             pausa_seg = calcular_pausa_desde_historial(
                 historial_mov,
                 umbral=0.03,
@@ -50,31 +50,49 @@ def main():
             ahora = time.time()
             if ahora - ultimo_reporte >= 1.0:
                 vitales = ppg.estimate_vitals()
-                variables = preparar_variables_para_prolog(
-                    vitales,
-                    movimiento,
-                    pausa_seg
-                )
+                sensor_status = vitales["status"]
 
-                estado = motor.evaluar(
-                    fc=variables["fc"],
-                    spo2=variables["spo2"],
-                    movimiento=variables["movimiento"],
-                    pausa_seg=variables["pausa_seg"]
-                )
+                if sensor_status == "VALIDO":
+                    variables = preparar_variables_para_prolog(
+                        vitales,
+                        movimiento,
+                        pausa_seg
+                    )
 
-                print(
-                    f"RED={datos_max['red']} | "
-                    f"IR={datos_max['ir']} | "
-                    f"FC={variables['fc']} | "
-                    f"SpO2={variables['spo2']} | "
-                    f"ax={datos_acc['ax']:.3f} | "
-                    f"ay={datos_acc['ay']:.3f} | "
-                    f"az={datos_acc['az']:.3f} | "
-                    f"Mov={variables['movimiento']:.3f} | "
-                    f"Pausa={variables['pausa_seg']} s | "
-                    f"Estado={estado}"
-                )
+                    estado = motor.evaluar(
+                        fc=variables["fc"],
+                        spo2=variables["spo2"],
+                        movimiento=variables["movimiento"],
+                        pausa_seg=variables["pausa_seg"]
+                    )
+
+                    print(
+                        f"[{sensor_status}] "
+                        f"RED={datos_max['red']} | "
+                        f"IR={datos_max['ir']} | "
+                        f"FC={variables['fc']} | "
+                        f"SpO2={variables['spo2']} | "
+                        f"ax={datos_acc['ax']:.3f} | "
+                        f"ay={datos_acc['ay']:.3f} | "
+                        f"az={datos_acc['az']:.3f} | "
+                        f"Mov={movimiento:.3f} | "
+                        f"Pausa={pausa_seg} s | "
+                        f"Estado={estado}"
+                    )
+                else:
+                    print(
+                        f"[{sensor_status}] "
+                        f"RED={datos_max['red']} | "
+                        f"IR={datos_max['ir']} | "
+                        f"FC=None | "
+                        f"SpO2=None | "
+                        f"ax={datos_acc['ax']:.3f} | "
+                        f"ay={datos_acc['ay']:.3f} | "
+                        f"az={datos_acc['az']:.3f} | "
+                        f"Mov={movimiento:.3f} | "
+                        f"Pausa={pausa_seg} s | "
+                        f"Estado=NO_EVALUADO"
+                    )
 
                 ultimo_reporte = ahora
 
