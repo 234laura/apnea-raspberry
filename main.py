@@ -23,7 +23,7 @@ except ImportError:
 # ── Pines GPIO (BCM) ──────────────────────────────────────────
 PIN_VERDE    = 14   # normal
 PIN_AMARILLO = 15   # moderada
-PIN_ROJO     = 17   # grave
+PIN_ROJO     = 27   # grave
 
 PINES = [PIN_VERDE, PIN_AMARILLO, PIN_ROJO]
 
